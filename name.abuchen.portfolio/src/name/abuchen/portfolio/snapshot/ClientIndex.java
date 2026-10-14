@@ -79,7 +79,8 @@ import name.abuchen.portfolio.util.Interval;
 
             long thisValuation = totals[index] = snapshot.nextValuation(dates[index]);
 
-            if (valuation + inboundTransferals[index] == 0)
+            boolean shortOpened = thisValuation < 0 && outboundTransferals[index] > 0;
+            if (valuation + inboundTransferals[index] == 0 && !shortOpened)
             {
                 delta[index] = 0;
 
@@ -93,8 +94,8 @@ import name.abuchen.portfolio.util.Interval;
             }
             else
             {
-                delta[index] = (double) (thisValuation + outboundTransferals[index])
-                                / (double) (valuation + inboundTransferals[index]) - 1;
+                delta[index] = dayReturn(valuation, inboundTransferals[index], thisValuation,
+                                outboundTransferals[index]);
             }
 
             accumulated[index] = ((accumulated[index - 1] + 1) * (delta[index] + 1)) - 1;
@@ -103,6 +104,24 @@ import name.abuchen.portfolio.util.Interval;
             valuation = thisValuation;
             index++;
         }
+    }
+
+    /**
+     * Returns the return of one day: the gain over the capital at the start of
+     * the day (previous valuation plus inbound transferals). For a positive
+     * base this is (valuation + outbound) / (previous valuation + inbound) - 1.
+     * A short position (negative base) is capital owed, so the gain is divided
+     * by its size: a short option that loses value gains. On the day a short
+     * position is opened (no base yet) the premium received is the base.
+     */
+    /* package */ static double dayReturn(long previousValuation, long inbound, long valuation, long outbound)
+    {
+        long base = previousValuation + inbound;
+        if (base > 0)
+            return (double) (valuation + outbound) / (double) base - 1;
+        if (base < 0)
+            return (double) (valuation + outbound - base) / (double) -base;
+        return (double) (valuation + outbound) / (double) outbound;
     }
 
     protected void addValue(long[] array, String currencyCode, long value, Interval interval, LocalDate time)

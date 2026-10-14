@@ -137,15 +137,19 @@ public final class Risk
         {
             Objects.requireNonNull(returns);
 
+            // a day losing 100% or more (possible for a short position,
+            // measured against the amount owed) has no log return
+            IntPredicate included = filter.and(ii -> returns[ii] > -1);
+
             double tempStandard = 0;
             double tempSemi = 0;
             int count = 0;
 
-            double averageLogReturn = logAverage(returns, filter);
+            double averageLogReturn = logAverage(returns, included);
 
             for (int ii = 0; ii < returns.length; ii++)
             {
-                if (!filter.test(ii))
+                if (!included.test(ii))
                     continue;
 
                 double logReturn = Math.log(1 + returns[ii]);

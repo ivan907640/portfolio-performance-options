@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import name.abuchen.portfolio.model.Account;
 import name.abuchen.portfolio.model.AccountTransaction;
@@ -62,12 +63,31 @@ import name.abuchen.portfolio.money.Values;
         /** the transactions that resulted in the given shares */
         private List<PortfolioTransaction> transactions;
 
+        /** the option chain (underlying and expiry), if it is an option */
+        private Optional<String> chain;
+
         public SecurityPosition(Security security)
         {
             this.security = security;
             this.transactions = new ArrayList<>();
             this.shares = 0;
         }
+
+        private Optional<String> chain()
+        {
+            if (chain == null)
+                chain = OptionChain.keyOf(security);
+            return chain;
+        }
+    }
+
+    /** the legs of one option chain held on a day */
+    private static class ChainValuation
+    {
+        private int legs;
+        private long value;
+        private boolean stale;
+        private boolean traded;
     }
 
     private final CurrencyConverter converter;
@@ -77,6 +97,9 @@ import name.abuchen.portfolio.money.Values;
     private final Map<Security, SecurityPosition> securities = new HashMap<>();
     private final List<PortfolioTransaction> portfolioTransactions;
     private int portfolioTransactionIndex = 0;
+
+    /** the value of each option chain on the previous valuation date */
+    private Map<String, Long> chainValues = new HashMap<>();
 
     /* package */ ClientSnapshotIterator(Client client, CurrencyConverter converter)
     {
@@ -111,12 +134,15 @@ import name.abuchen.portfolio.money.Values;
             }
         }
 
+        Map<String, ChainValuation> chains = new HashMap<>();
+
         for (SecurityPosition position : securities.values())
         {
             if (position.shares == 0)
                 continue;
 
             SecurityPrice price = position.security.getSecurityPrice(date);
+            boolean priced = price.getValue() != 0L && price.getDate().equals(date);
 
             if (price.getValue() == 0L)
             {
@@ -134,16 +160,42 @@ import name.abuchen.portfolio.money.Values;
                             .movePointLeft(Values.Quote.precisionDeltaToMoney()) //
                             .setScale(0, RoundingMode.HALF_UP).longValue();
 
-            if (converter.getTermCurrency().equals(position.security.getCurrencyCode()))
+            if (!converter.getTermCurrency().equals(position.security.getCurrencyCode()))
+            {
+                marketValue = converter.convert(date, Money.of(position.security.getCurrencyCode(), marketValue))
+                                .getAmount();
+            }
+
+            var chain = position.chain();
+            if (chain.isEmpty())
             {
                 valuation += marketValue;
             }
             else
             {
-                valuation += converter.convert(date, Money.of(position.security.getCurrencyCode(), marketValue))
-                                .getAmount();
+                var c = chains.computeIfAbsent(chain.get(), k -> new ChainValuation());
+                c.legs++;
+                c.value += marketValue;
+                c.stale |= !priced;
+                c.traded |= position.transactions.get(position.transactions.size() - 1).getDateTime().toLocalDate()
+                                .equals(date);
             }
         }
+
+        // Option legs that offset each other (a spread, a box) must be priced
+        // on the same day: one leg's old price next to the others' new ones
+        // moves the net value by far more than it really moved. Until every
+        // leg has a price again, the chain keeps its value, unless it traded.
+        Map<String, Long> values = new HashMap<>();
+        for (var entry : chains.entrySet())
+        {
+            var c = entry.getValue();
+            Long previous = chainValues.get(entry.getKey());
+            long value = c.legs > 1 && c.stale && !c.traded && previous != null ? previous : c.value;
+            values.put(entry.getKey(), value);
+            valuation += value;
+        }
+        chainValues = values;
 
         return valuation;
     }
