@@ -3,11 +3,14 @@ package name.abuchen.portfolio.snapshot;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.number.IsCloseTo.closeTo;
 import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.Test;
 
@@ -104,5 +107,27 @@ public class ShortOptionIndexTest
         assertThat(OptionChain.keyOf(b).orElseThrow(), is("SPX 261218"));
         assertThat(OptionChain.keyOf(c).orElseThrow(), is("SPX 261218"));
         assertTrue(OptionChain.keyOf(stock).isEmpty());
+    }
+
+    @Test
+    public void testBoxDetection()
+    {
+        var client = new Client();
+        var c100 = OptionChain.contractOf(option(client, "XYZ 20MAR26 100 C", "XYZ260320C00100000", null))
+                        .orElseThrow();
+        var p100 = OptionChain.contractOf(option(client, "XYZ 20MAR26 100 P", "XYZ260320P00100000", null))
+                        .orElseThrow();
+        var c110 = OptionChain.contractOf(option(client, "XYZ 20MAR26 110 C", null, null)).orElseThrow();
+        var p110 = OptionChain.contractOf(option(client, "XYZ 20MAR26 110 P", null, null)).orElseThrow();
+
+        assertThat(c110.strike(), is(new BigDecimal("110")));
+        assertThat(c100.chainKey(), is(c110.chainKey()));
+
+        // long box: synthetic long at 100, synthetic short at 110
+        assertTrue(OptionChain.isBox(Map.of(c100, 100L, p100, -100L, c110, -100L, p110, 100L)));
+        // a vertical spread is not a box
+        assertFalse(OptionChain.isBox(Map.of(c100, 100L, c110, -100L)));
+        // closed positions are not a box
+        assertFalse(OptionChain.isBox(Map.of(c100, 0L, p100, 0L)));
     }
 }

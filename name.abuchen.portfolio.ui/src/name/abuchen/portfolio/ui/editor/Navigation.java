@@ -54,6 +54,7 @@ import name.abuchen.portfolio.ui.views.SecurityListView;
 import name.abuchen.portfolio.ui.views.SecurityPriceUpdateView;
 import name.abuchen.portfolio.ui.views.StatementOfAssetsHistoryView;
 import name.abuchen.portfolio.ui.views.StatementOfAssetsView;
+import name.abuchen.portfolio.ui.views.calendar.PerformanceCalendarView;
 import name.abuchen.portfolio.ui.views.currency.CurrencyView;
 import name.abuchen.portfolio.ui.views.dashboard.DashboardView;
 import name.abuchen.portfolio.ui.views.holdings.HoldingsPieChartView;
@@ -503,6 +504,8 @@ public final class Navigation
         performance.add(new Item(Messages.LabelSecurities, SecuritiesPerformanceView.class));
         performance.add(new Item(Messages.LabelPayments, PaymentsView.class, true));
         performance.add(new Item(Messages.LabelTrades, TradeDetailsView.class));
+        performance.add(new Item(name.abuchen.portfolio.ui.views.calendar.Messages.LabelCalendar,
+                        PerformanceCalendarView.class, true));
     }
 
     private void createTaxonomyDataSection(Client client)
