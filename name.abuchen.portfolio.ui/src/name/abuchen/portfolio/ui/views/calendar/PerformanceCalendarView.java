@@ -429,10 +429,22 @@ public class PerformanceCalendarView extends AbstractFinanceView
     private void setSummary(Period period)
     {
         if (period == null || !period.hasData())
+        {
             summary.setText(Messages.MsgNoData);
-        else
-            summary.setText(Messages.LabelTotal + ": " + amount(period.gain(), true) + " " + getClient().getBaseCurrency() //$NON-NLS-1$ //$NON-NLS-2$
-                            + "   " + percentage(period.rateOfReturn())); //$NON-NLS-1$
+            return;
+        }
+
+        // the total shows what the cells show
+        var money = amount(period.gain(), true) + " " + getClient().getBaseCurrency(); //$NON-NLS-1$
+        var rate = percentage(period.rateOfReturn());
+        var value = switch (show)
+        {
+            case AMOUNT -> money;
+            case PERCENTAGE -> rate;
+            case BOTH -> money + "   " + rate; //$NON-NLS-1$
+            default -> throw new IllegalStateException();
+        };
+        summary.setText(Messages.LabelTotal + ": " + value); //$NON-NLS-1$
     }
 
     private static String amount(long gain, boolean exact)
