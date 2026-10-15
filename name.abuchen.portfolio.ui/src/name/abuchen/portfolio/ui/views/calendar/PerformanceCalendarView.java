@@ -290,7 +290,7 @@ public class PerformanceCalendarView extends AbstractFinanceView
         for (var d = firstOfMonth; !d.isAfter(lastOfMonth); d = d.plusDays(1))
             if (isTradingDay(d))
                 days.add(period(d, d));
-        var coloring = new Coloring(days);
+        var coloring = new Coloring(days, 0.01);
 
         var monday = firstOfMonth.minusDays(firstOfMonth.getDayOfWeek().getValue() - 1L);
         for (var week = monday; !week.isAfter(lastOfMonth); week = week.plusWeeks(1))
@@ -321,7 +321,7 @@ public class PerformanceCalendarView extends AbstractFinanceView
         List<Period> months = new ArrayList<>();
         for (var m : Month.values())
             months.add(period(YearMonth.of(position.getYear(), m)));
-        var coloring = new Coloring(months);
+        var coloring = new Coloring(months, 0.03);
 
         for (var m : Month.values())
         {
@@ -356,7 +356,7 @@ public class PerformanceCalendarView extends AbstractFinanceView
         List<Period> years = new ArrayList<>();
         for (int y = firstYear; y <= lastYear; y++)
             years.add(calendar.year(y));
-        var coloring = new Coloring(years);
+        var coloring = new Coloring(years, 0.10);
 
         for (int y = firstYear; y <= lastYear; y++)
         {
@@ -448,34 +448,31 @@ public class PerformanceCalendarView extends AbstractFinanceView
     }
 
     /**
-     * Soft tints relative to the largest gain or loss on the screen: the
-     * square root keeps small moves visible, and even the largest move stays a
-     * light tint so the numbers remain readable.
+     * Soft tints by rate of return, relative to the largest move on the screen
+     * but at least to a typical move of the period (so a quiet month of small
+     * moves stays pale). The square root keeps small moves visible, and even
+     * the largest move stays a light tint so the numbers remain readable.
      */
-    private final class Coloring
+    private static final class Coloring
     {
         private static final float MAX_INTENSITY = 0.85f;
 
         private final ColorGradient gradient = new ColorGradient(Colors.getColor(229, 115, 115),
                         Colors.theme().defaultBackground(), Colors.getColor(102, 187, 106));
-        private final double max;
+        private final double scale;
 
-        private Coloring(List<Period> periods)
+        private Coloring(List<Period> periods, double typicalMove)
         {
-            max = periods.stream().filter(Period::hasData).mapToDouble(this::value).map(Math::abs).max().orElse(0);
-        }
-
-        private double value(Period period)
-        {
-            return show == Show.AMOUNT ? period.gain() : period.rateOfReturn();
+            scale = Math.max(typicalMove, periods.stream().filter(Period::hasData)
+                            .mapToDouble(p -> Math.abs(p.rateOfReturn())).max().orElse(0));
         }
 
         private Color colorOf(Period period)
         {
-            double v = value(period);
-            if (max == 0 || v == 0)
+            double v = period.rateOfReturn();
+            if (v == 0)
                 return null;
-            var share = Math.sqrt(Math.min(1, Math.abs(v) / max)) * MAX_INTENSITY;
+            var share = Math.sqrt(Math.min(1, Math.abs(v) / scale)) * MAX_INTENSITY;
             return gradient.getColorAt((float) (0.5 + Math.signum(v) * 0.5 * share));
         }
     }
@@ -523,7 +520,8 @@ public class PerformanceCalendarView extends AbstractFinanceView
         var expiry = LocalDate.parse("20" + key.substring(separator + 1), DateTimeFormatter.BASIC_ISO_DATE); //$NON-NLS-1$
         var kind = OptionChain.isBox(positions) ? Messages.LabelBoxSpreads : Messages.LabelOptions;
         return underlying + " " + expiry.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())) //$NON-NLS-1$ //$NON-NLS-2$
-                        + " " + kind + " (" + legs.size() + " " + Messages.LabelLegs + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                        + " " + kind + " (" + legs.size() + " " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        + (legs.size() == 1 ? Messages.LabelLeg : Messages.LabelLegs) + ")"; //$NON-NLS-1$
     }
 
     private void groupMenu(IMenuManager manager)

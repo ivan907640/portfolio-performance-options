@@ -24,6 +24,7 @@ import name.abuchen.portfolio.model.Client;
 import name.abuchen.portfolio.model.Security;
 import name.abuchen.portfolio.model.Taxonomy;
 import name.abuchen.portfolio.money.Values;
+import name.abuchen.portfolio.util.Dates;
 import name.abuchen.portfolio.util.Interval;
 
 @SuppressWarnings("nls")
@@ -129,5 +130,48 @@ public class ShortOptionIndexTest
         assertFalse(OptionChain.isBox(Map.of(c100, 100L, c110, -100L)));
         // closed positions are not a box
         assertFalse(OptionChain.isBox(Map.of(c100, 0L, p100, 0L)));
+    }
+
+    @Test
+    public void testThatABoxSpreadIsValuedAsALoan()
+    {
+        var client = new Client();
+        Taxonomy taxonomy = new TaxonomyBuilder().addClassification("spread").addTo(client);
+        Account account = new AccountBuilder().deposit_("2026-01-05", Values.Amount.factorize(10000)).addTo(client);
+
+        // leg prices that do not fit together; the box ignores them
+        var c100 = option(client, "XYZ 20MAR26 100 C", "XYZ260320C00100000", taxonomy, 6, 9, Double.NaN);
+        var p100 = option(client, "XYZ 20MAR26 100 P", "XYZ260320P00100000", taxonomy, 2, Double.NaN, 1);
+        var c110 = option(client, "XYZ 20MAR26 110 C", "XYZ260320C00110000", taxonomy, 1.2, 0.5, 3);
+        var p110 = option(client, "XYZ 20MAR26 110 P", "XYZ260320P00110000", taxonomy, 7, Double.NaN, 4);
+
+        // short box: borrow 980 now, pay 1,000 (strike width 10 x 100) on 20 March
+        new PortfolioBuilder(account) //
+                        .sell(c100, "2026-01-05", Values.Share.factorize(100), Values.Amount.factorize(600)) //
+                        .buy(p100, "2026-01-05", Values.Share.factorize(100), Values.Amount.factorize(200)) //
+                        .buy(c110, "2026-01-05", Values.Share.factorize(100), Values.Amount.factorize(120)) //
+                        .sell(p110, "2026-01-05", Values.Share.factorize(100), Values.Amount.factorize(700)) //
+                        .addTo(client);
+
+        List<Exception> warnings = new ArrayList<>();
+        var index = PerformanceIndex.forClassification(client, new TestCurrencyConverter(),
+                        taxonomy.getClassificationById("spread"),
+                        Interval.of(LocalDate.parse("2026-01-04"), LocalDate.parse("2026-03-31")), warnings);
+
+        assertTrue(warnings.toString(), warnings.isEmpty());
+        var totals = index.getTotals();
+        var dates = index.getDates();
+        assertThat(totals[1], is(Values.Amount.factorize(-980)));
+        int expiry = Dates.daysBetween(dates[0], LocalDate.parse("2026-03-20"));
+        assertThat(totals[expiry], is(Values.Amount.factorize(-1000)));
+
+        // the cost of borrowing accrues smoothly: a small loss every day
+        var delta = index.getDeltaPercentage();
+        for (int ii = 2; ii <= expiry; ii++)
+        {
+            assertTrue(dates[ii] + " " + totals[ii], totals[ii] <= totals[ii - 1] && totals[ii] > totals[1] - 2100);
+            assertThat(delta[ii], closeTo(1 - Math.pow(1000d / 980, 1d / (expiry - 1)), 1e-5));
+        }
+        assertThat(index.getFinalAccumulatedPercentage(), closeTo(-20d / 980, 1e-3));
     }
 }

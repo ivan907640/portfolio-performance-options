@@ -19,6 +19,7 @@ import name.abuchen.portfolio.model.Transaction;
 import name.abuchen.portfolio.money.CurrencyConverter;
 import name.abuchen.portfolio.money.Money;
 import name.abuchen.portfolio.money.Values;
+import name.abuchen.portfolio.util.Dates;
 
 /**
  * Calculates the valuation of a client for a given date.
@@ -63,8 +64,8 @@ import name.abuchen.portfolio.money.Values;
         /** the transactions that resulted in the given shares */
         private List<PortfolioTransaction> transactions;
 
-        /** the option chain (underlying and expiry), if it is an option */
-        private Optional<String> chain;
+        /** the option contract, if it is an option */
+        private Optional<OptionChain.Contract> contract;
 
         public SecurityPosition(Security security)
         {
@@ -73,11 +74,11 @@ import name.abuchen.portfolio.money.Values;
             this.shares = 0;
         }
 
-        private Optional<String> chain()
+        private Optional<OptionChain.Contract> contract()
         {
-            if (chain == null)
-                chain = OptionChain.keyOf(security);
-            return chain;
+            if (contract == null)
+                contract = OptionChain.contractOf(security);
+            return contract;
         }
     }
 
@@ -88,6 +89,28 @@ import name.abuchen.portfolio.money.Values;
         private long value;
         private boolean stale;
         private boolean traded;
+        /** the cash paid for the trades of the day, negative if received */
+        private long cash;
+        private final Map<OptionChain.Contract, Long> positions = new HashMap<>();
+        private String currencyCode;
+    }
+
+    /**
+     * A box spread valued as the loan (or deposit) it is: from its value after
+     * the last trade to the value due at expiry, at a constant rate.
+     */
+    private record BoxValuation(LocalDate from, long value, LocalDate expiry, long expiryValue)
+    {
+        private long valueAt(LocalDate date)
+        {
+            long days = Dates.daysBetween(from, expiry);
+            if (!date.isBefore(expiry) || days <= 0)
+                return expiryValue;
+            double share = (double) Dates.daysBetween(from, date) / days;
+            if (value != 0 && Long.signum(value) == Long.signum(expiryValue))
+                return Math.round(value * Math.pow((double) expiryValue / value, share));
+            return Math.round(value + (expiryValue - value) * share);
+        }
     }
 
     private final CurrencyConverter converter;
@@ -100,6 +123,12 @@ import name.abuchen.portfolio.money.Values;
 
     /** the value of each option chain on the previous valuation date */
     private Map<String, Long> chainValues = new HashMap<>();
+
+    /** the option chains that are box spreads, valued as loans */
+    private final Map<String, BoxValuation> boxes = new HashMap<>();
+
+    /** false until the first valuation date */
+    private boolean valuedBefore;
 
     /* package */ ClientSnapshotIterator(Client client, CurrencyConverter converter)
     {
@@ -138,6 +167,23 @@ import name.abuchen.portfolio.money.Values;
 
         for (SecurityPosition position : securities.values())
         {
+            var contract = position.contract();
+
+            // the cash of the day's trades, also of legs closed today
+            if (contract.isPresent())
+            {
+                var c = chains.computeIfAbsent(contract.get().chainKey(), k -> new ChainValuation());
+                for (int ii = position.transactions.size() - 1; ii >= 0; ii--)
+                {
+                    var tx = position.transactions.get(ii);
+                    if (!tx.getDateTime().toLocalDate().equals(date))
+                        break;
+                    long amount = converter.convert(date, tx.getMonetaryAmount()).getAmount();
+                    c.cash += tx.getType().isPurchase() ? amount : -amount;
+                    c.traded = true;
+                }
+            }
+
             if (position.shares == 0)
                 continue;
 
@@ -166,19 +212,18 @@ import name.abuchen.portfolio.money.Values;
                                 .getAmount();
             }
 
-            var chain = position.chain();
-            if (chain.isEmpty())
+            if (contract.isEmpty())
             {
                 valuation += marketValue;
             }
             else
             {
-                var c = chains.computeIfAbsent(chain.get(), k -> new ChainValuation());
+                var c = chains.get(contract.get().chainKey());
                 c.legs++;
                 c.value += marketValue;
                 c.stale |= !priced;
-                c.traded |= position.transactions.get(position.transactions.size() - 1).getDateTime().toLocalDate()
-                                .equals(date);
+                c.positions.merge(contract.get(), position.shares, Long::sum);
+                c.currencyCode = position.security.getCurrencyCode();
             }
         }
 
@@ -186,18 +231,83 @@ import name.abuchen.portfolio.money.Values;
         // on the same day: one leg's old price next to the others' new ones
         // moves the net value by far more than it really moved. Until every
         // leg has a price again, the chain keeps its value, unless it traded.
+        //
+        // A chain whose open legs form box spreads is a loan (or a deposit):
+        // its value at expiry is fixed, so it is valued from the value after
+        // the last trade to the value due at expiry instead of from the leg
+        // prices, which are often missing or taken at different times.
         Map<String, Long> values = new HashMap<>();
         for (var entry : chains.entrySet())
         {
+            var key = entry.getKey();
             var c = entry.getValue();
-            Long previous = chainValues.get(entry.getKey());
-            long value = c.legs > 1 && c.stale && !c.traded && previous != null ? previous : c.value;
-            values.put(entry.getKey(), value);
+            if (c.legs == 0)
+            {
+                boxes.remove(key);
+                continue;
+            }
+
+            Long previous = chainValues.get(key);
+            long value;
+            if (c.legs > 1 && OptionChain.isBox(c.positions))
+            {
+                var box = boxes.get(key);
+                if (box == null || c.traded)
+                {
+                    // on the first date the box is taken at its market value;
+                    // later, the value before the trades plus their cash
+                    long start;
+                    if (!valuedBefore)
+                        start = c.value;
+                    else if (box != null)
+                        start = box.valueAt(date) + c.cash;
+                    else
+                        start = (previous != null ? previous : 0) + c.cash;
+                    box = new BoxValuation(date, start, expiry(c), expiryValue(c, date));
+                    boxes.put(key, box);
+                }
+                value = box.valueAt(date);
+            }
+            else
+            {
+                boxes.remove(key);
+                value = c.legs > 1 && c.stale && !c.traded && previous != null ? previous : c.value;
+            }
+            values.put(key, value);
             valuation += value;
         }
         chainValues = values;
+        valuedBefore = true;
 
         return valuation;
+    }
+
+    private static LocalDate expiry(ChainValuation chain)
+    {
+        var expiry = chain.positions.keySet().iterator().next().expiry();
+        return LocalDate.of(2000 + Integer.parseInt(expiry.substring(0, 2)), Integer.parseInt(expiry.substring(2, 4)),
+                        Integer.parseInt(expiry.substring(4, 6)));
+    }
+
+    /**
+     * Returns the value of a box at expiry: at every strike the call and the
+     * put form a synthetic future worth (price - strike) per share, and the
+     * prices cancel out, leaving -(shares of the calls x strike).
+     */
+    private long expiryValue(ChainValuation chain, LocalDate date)
+    {
+        var value = BigDecimal.ZERO;
+        for (var entry : chain.positions.entrySet())
+        {
+            if (entry.getKey().right() != 'C')
+                continue;
+            value = value.subtract(BigDecimal.valueOf(entry.getValue()).movePointLeft(Values.Share.precision())
+                            .multiply(entry.getKey().strike()));
+        }
+        long amount = value.movePointRight(Values.Amount.precision()).setScale(0, RoundingMode.HALF_UP).longValue();
+        if (!converter.getTermCurrency().equals(chain.currencyCode))
+            amount = converter.convert(date, Money.of(chain.currencyCode, amount)).getAmount();
+        return amount;
     }
 
     private void applyPortfolioTransactions(LocalDate date)

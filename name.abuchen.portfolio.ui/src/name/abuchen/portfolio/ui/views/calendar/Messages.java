@@ -9,6 +9,7 @@ public class Messages extends NLS
     public static String LabelBoxSpreads;
     public static String LabelCalendar;
     public static String LabelDay;
+    public static String LabelLeg;
     public static String LabelLegs;
     public static String LabelMoney;
     public static String LabelMoneyAndPercentage;
